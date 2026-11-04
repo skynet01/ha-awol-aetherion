@@ -439,3 +439,246 @@ async def test_wake_deadline_is_enforced(hass: HomeAssistant, projector: FakePro
         )
     assert loop.time() - start < 1.5
     projector.silent = False
+
+
+# --- power control options ----------------------------------------------------
+
+POWER = "switch.projector_power"
+COORD = "custom_components.aetherion.coordinator"
+
+
+async def _setup_with(hass, projector, **options) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Aetherion", unique_id="127.0.0.1",
+        data={CONF_HOST: "127.0.0.1", CONF_PORT: projector.port},
+        options=options,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+async def _settle(hass) -> None:
+    """Let the power-cut task run a few checks."""
+    await asyncio.sleep(0.1)
+    await hass.async_block_till_done()
+
+
+@pytest.fixture
+def fast_power_checks():
+    with (
+        patch(f"{COORD}.POWER_OFF_CHECK_SECONDS", 0.01),
+        patch(f"{COORD}.POWER_OFF_CONFIRM_TIMEOUT", 30),
+    ):
+        yield
+
+
+async def _go_offline(hass, entry, projector) -> None:
+    await projector.stop()
+    await entry.runtime_data.client.close()
+    await _refresh(hass, entry)
+    await _refresh(hass, entry)
+    assert hass.states.get(MP).state == STATE_OFF
+
+
+async def test_power_cut_waits_for_projector_to_be_fully_off(
+    hass: HomeAssistant, projector: FakeProjector, fast_power_checks
+) -> None:
+    entry = await _setup_with(
+        hass, projector, wake_entity=POWER, power_off_entity=True, power_off_delay=0
+    )
+    calls = async_mock_service(hass, "switch", "turn_off")
+    await hass.services.async_call(MP_DOMAIN, "turn_off", {ATTR_ENTITY_ID: MP}, blocking=True)
+    assert projector.state["1POWR"] == "0"
+
+    # Standby reported but the port is still open: too early to cut.
+    await _settle(hass)
+    assert not calls
+
+    await projector.stop()  # the port closes a few seconds into standby
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert [c.data["entity_id"] for c in calls] == [POWER]
+    await entry.runtime_data.client.close()
+
+
+async def test_power_cut_honours_cool_down(
+    hass: HomeAssistant, projector: FakeProjector, fast_power_checks
+) -> None:
+    await _setup_with(
+        hass, projector, wake_entity=POWER, power_off_entity=True, power_off_delay=60
+    )
+    calls = async_mock_service(hass, "switch", "turn_off")
+    await hass.services.async_call(MP_DOMAIN, "turn_off", {ATTR_ENTITY_ID: MP}, blocking=True)
+    await projector.stop()
+    await _settle(hass)
+    assert not calls  # confirmed off, still inside the 60 s cool-down
+
+
+async def test_power_left_on_when_off_is_never_confirmed(
+    hass: HomeAssistant, projector: FakeProjector
+) -> None:
+    await _setup_with(
+        hass, projector, wake_entity=POWER, power_off_entity=True, power_off_delay=0
+    )
+    calls = async_mock_service(hass, "switch", "turn_off")
+    projector.respond_override = {"1POWR": "OK"}  # accepted, but it stays on
+    with (
+        patch(f"{COORD}.POWER_OFF_CHECK_SECONDS", 0.01),
+        patch(f"{COORD}.POWER_OFF_CONFIRM_TIMEOUT", 0.05),
+    ):
+        await hass.services.async_call(MP_DOMAIN, "turn_off", {ATTR_ENTITY_ID: MP}, blocking=True)
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert projector.state["1POWR"] == "1"
+    assert not calls
+
+
+async def test_power_left_on_if_turned_back_on_during_cool_down(
+    hass: HomeAssistant, projector: FakeProjector, fast_power_checks
+) -> None:
+    entry = await _setup_with(
+        hass, projector, wake_entity=POWER, power_off_entity=True, power_off_delay=60
+    )
+    calls = async_mock_service(hass, "switch", "turn_off")
+    port = projector.port
+    await hass.services.async_call(MP_DOMAIN, "turn_off", {ATTR_ENTITY_ID: MP}, blocking=True)
+    await projector.stop()
+    await _settle(hass)
+
+    back_on = FakeProjector(port=port)  # someone used the remote
+    await back_on.start()
+    try:
+        await hass.async_block_till_done(wait_background_tasks=True)
+        assert not calls
+    finally:
+        await entry.runtime_data.client.close()
+        await back_on.stop()
+
+
+async def test_turn_on_cancels_pending_power_cut(
+    hass: HomeAssistant, projector: FakeProjector, fast_power_checks
+) -> None:
+    await _setup_with(
+        hass, projector, wake_entity=POWER, power_off_entity=True, power_off_delay=60
+    )
+    calls = async_mock_service(hass, "switch", "turn_off")
+    async_mock_service(hass, "switch", "turn_on")
+    await hass.services.async_call(MP_DOMAIN, "turn_off", {ATTR_ENTITY_ID: MP}, blocking=True)
+    await projector.stop()
+    await _settle(hass)
+    await hass.services.async_call(MP_DOMAIN, "turn_on", {ATTR_ENTITY_ID: MP}, blocking=True)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert not calls
+
+
+async def test_power_not_cut_when_off_command_refused(
+    hass: HomeAssistant, projector: FakeProjector, fast_power_checks
+) -> None:
+    await _setup_with(
+        hass, projector, wake_entity=POWER, power_off_entity=True, power_off_delay=0
+    )
+    calls = async_mock_service(hass, "switch", "turn_off")
+    projector.respond_override = {"1POWR": "ERR3"}
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(MP_DOMAIN, "turn_off", {ATTR_ENTITY_ID: MP}, blocking=True)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert not calls
+
+
+async def test_power_not_cut_when_projector_unreachable(
+    hass: HomeAssistant, projector: FakeProjector, fast_power_checks
+) -> None:
+    """Could be off, could be on with the network down: never cut blind."""
+    entry = await _setup_with(
+        hass, projector, wake_entity=POWER, power_off_entity=True, power_off_delay=0
+    )
+    calls = async_mock_service(hass, "switch", "turn_off")
+    await _go_offline(hass, entry, projector)
+    await hass.services.async_call(MP_DOMAIN, "turn_off", {ATTR_ENTITY_ID: MP}, blocking=True)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert not calls
+
+
+async def test_power_entity_not_turned_off_unless_chosen(
+    hass: HomeAssistant, projector: FakeProjector, fast_power_checks
+) -> None:
+    await _setup_with(hass, projector, wake_entity=POWER, power_off_delay=0)
+    calls = async_mock_service(hass, "switch", "turn_off")
+    await hass.services.async_call(MP_DOMAIN, "turn_off", {ATTR_ENTITY_ID: MP}, blocking=True)
+    await projector.stop()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert not calls
+
+
+async def test_remote_power_off_key_uses_the_same_path(
+    hass: HomeAssistant, projector: FakeProjector, fast_power_checks
+) -> None:
+    entry = await _setup_with(
+        hass, projector, wake_entity=POWER, power_off_entity=True, power_off_delay=0
+    )
+    calls = async_mock_service(hass, "switch", "turn_off")
+    await hass.services.async_call(
+        "remote", "send_command",
+        {ATTR_ENTITY_ID: "remote.aetherion", "command": "power_off"},
+        blocking=True,
+    )
+    await projector.stop()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert len(calls) == 1
+    await entry.runtime_data.client.close()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"wol_mac": "aa:bb:cc:00:11:22"},  # MAC alone never enables it
+        {"wol_mac": "aa:bb:cc:00:11:22", "wol_enabled": False},
+        {"wol_mac": "aa:bb:cc:00:11:22", "wake_host": "127.0.0.1", "wol_enabled": False},
+    ],
+)
+async def test_no_magic_packet_unless_enabled(
+    hass: HomeAssistant, projector: FakeProjector, options
+) -> None:
+    entry = await _setup_with(hass, projector, **options)
+    await _go_offline(hass, entry, projector)
+    with (
+        patch(f"{COORD}.send_magic_packet") as wol,
+        pytest.raises(HomeAssistantError) as err,
+    ):
+        await hass.services.async_call(MP_DOMAIN, "turn_on", {ATTR_ENTITY_ID: MP}, blocking=True)
+    assert err.value.translation_key == "standby_port_closed"
+    wol.assert_not_called()
+
+
+async def test_magic_packet_when_enabled(hass: HomeAssistant, projector: FakeProjector) -> None:
+    entry = await _setup_with(
+        hass, projector, wol_enabled=True, wol_mac="aa:bb:cc:00:11:22"
+    )
+    await _go_offline(hass, entry, projector)
+    with (
+        patch(f"{COORD}.send_magic_packet") as wol,
+        patch(f"{COORD}.WAKE_TIMEOUT_SECONDS", 0.2),
+        pytest.raises(HomeAssistantError) as err,
+    ):
+        await hass.services.async_call(MP_DOMAIN, "turn_on", {ATTR_ENTITY_ID: MP}, blocking=True)
+    assert err.value.translation_key == "wake_no_answer"
+    wol.assert_called()
+
+
+async def test_power_entity_used_first_when_both_set(
+    hass: HomeAssistant, projector: FakeProjector
+) -> None:
+    entry = await _setup_with(
+        hass, projector, wake_entity=POWER, wol_enabled=True, wol_mac="aa:bb:cc:00:11:22"
+    )
+    await _go_offline(hass, entry, projector)
+    calls = async_mock_service(hass, "switch", "turn_on")
+    with (
+        patch(f"{COORD}.send_magic_packet") as wol,
+        patch(f"{COORD}.WAKE_TIMEOUT_SECONDS", 0.2),
+    ):
+        await hass.services.async_call(MP_DOMAIN, "turn_on", {ATTR_ENTITY_ID: MP}, blocking=True)
+        assert [c.data["entity_id"] for c in calls] == [POWER]
+        assert hass.states.get(MP).attributes["booting"] is True
+        await hass.async_block_till_done(wait_background_tasks=True)
+    wol.assert_called()

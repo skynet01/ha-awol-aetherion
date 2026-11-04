@@ -452,23 +452,6 @@ def send_magic_packet(mac: str, host: str | None = None) -> None:
                     _LOGGER.debug("Magic packet to %s:%s failed: %s", target, port, err)
 
 
-def arp_lookup(host: str, arp_table: str = "/proc/net/arp") -> str | None:
-    """Return the MAC for ``host`` from the Linux ARP table (blocking)."""
-    try:
-        with open(arp_table, encoding="ascii") as file:
-            lines = file.read().splitlines()[1:]
-    except OSError:
-        return None
-    for line in lines:
-        cols = line.split()
-        if len(cols) >= 4 and cols[0] == host and cols[3] != "00:00:00:00:00:00":
-            try:
-                return normalize_mac(cols[3])
-            except ValueError:
-                return None
-    return None
-
-
 # --- UDP search + status notifications ----------------------------------------------
 
 

@@ -21,18 +21,25 @@ from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    CONF_POWER_OFF_DELAY,
+    CONF_POWER_OFF_ENTITY,
     CONF_WAKE_ENTITY,
     CONF_WAKE_HOST,
     CONF_WOL_MAC,
+    DEFAULT_POWER_OFF_DELAY,
     DOMAIN,
     MANUFACTURER,
     OFF_CONNECT_TIMEOUT,
     OFF_SCAN_INTERVAL,
+    POWER_OFF_CHECK_SECONDS,
+    POWER_OFF_CONFIRM_TIMEOUT,
     SCAN_INTERVAL,
+    WAKE_DOMAINS,
     WAKE_GRACE_SECONDS,
     WAKE_TIMEOUT_SECONDS,
     WAKING_SCAN_INTERVAL,
     device_key,
+    wol_enabled,
 )
 from .protocol import (
     POWER_ON,
@@ -55,14 +62,6 @@ _LOGGER = logging.getLogger(__name__)
 SLOW_POLL_EVERY = 6
 # Consecutive connection failures before we report the projector as off.
 OFFLINE_AFTER_FAILURES = 2
-# Entities that can wake the projector, and the service to call on them.
-WAKE_DOMAINS = {
-    "remote": "turn_on",
-    "media_player": "turn_on",
-    "script": "turn_on",
-    "switch": "turn_on",
-    "button": "press",
-}
 
 COMMAND_ERROR_KEYS = {
     "ERR1": "command_unsupported",
@@ -178,6 +177,7 @@ class AetherionCoordinator(DataUpdateCoordinator[AetherionData]):
         self._data_gen = 0
         # Bumped by power-off so an in-flight wake can't power back on.
         self._power_gen = 0
+        self._power_cut_task: asyncio.Task | None = None
 
     async def async_fetch_device_info(self) -> None:
         """Read identity values (called at setup and when firmware is unknown)."""
@@ -360,6 +360,7 @@ class AetherionCoordinator(DataUpdateCoordinator[AetherionData]):
         optimized" standby) and/or a configured wake entity. The call returns
         right away; the entity shows "on" while booting and polls quickly.
         """
+        self._async_cancel_power_cut()
         if self.data is None or self.data.reachable:
             try:
                 await self.async_run(self.client.power_on(), power=POWER_WARMING)
@@ -379,32 +380,128 @@ class AetherionCoordinator(DataUpdateCoordinator[AetherionData]):
             )
 
     async def async_turn_off(self) -> None:
-        """Standby; also cancels a pending wake so it isn't powered back on."""
+        """Standby, then cut the linked power entity once it is safe (if set up).
+
+        Also cancels a pending wake so the projector isn't powered back on. Power
+        is only ever cut after the projector accepted this off command: if it
+        can't be reached we can't tell "already off" from "on, network down".
+        """
         self._wake_until = 0.0
         self._power_gen += 1
+        self._async_cancel_power_cut()
+        data = self.data
+        if data is not None and not data.reachable and not data.waking:
+            _LOGGER.debug("Already off (control port closed), nothing to send")
+            return
         await self.async_run(self.client.power_off(), power=POWER_STANDBY)
+        options = self.config_entry.options
+        entity_id = options.get(CONF_WAKE_ENTITY)
+        if entity_id and options.get(CONF_POWER_OFF_ENTITY):
+            self._power_cut_task = self.config_entry.async_create_background_task(
+                self.hass,
+                self._async_power_cut(entity_id),
+                "aetherion_power_cut",
+            )
+
+    @callback
+    def _async_cancel_power_cut(self) -> None:
+        if self._power_cut_task is not None and not self._power_cut_task.done():
+            self._power_cut_task.cancel()
+        self._power_cut_task = None
+
+    async def _async_probe_power(self) -> int | None:
+        """Ask for the power state. None = port closed, -1 = no usable answer."""
+        try:
+            value = _int(await self.client.query(1, "POWR"))
+        except AetherionConnectionError:
+            return None
+        except AetherionError as err:
+            _LOGGER.debug("Power query failed: %s", err)
+            return -1
+        return -1 if value is None else value
+
+    async def _async_wait_until_off(self) -> bool:
+        """Return True once the projector is confirmed off.
+
+        Off means its control port closed (it does that a few seconds into
+        standby) on two checks in a row, or that it still reports standby when
+        time runs out. Anything else counts as not confirmed.
+        """
+        deadline = time.monotonic() + POWER_OFF_CONFIRM_TIMEOUT
+        closed = 0
+        power: int | None = None
+        while time.monotonic() < deadline:
+            power = await self._async_probe_power()
+            closed = closed + 1 if power is None else 0
+            if closed >= 2:
+                return True
+            await asyncio.sleep(POWER_OFF_CHECK_SECONDS)
+        return power == POWER_STANDBY
+
+    async def _async_power_cut(self, entity_id: str) -> None:
+        """Turn the power entity off, but only once the projector is fully off."""
+        if not await self._async_wait_until_off():
+            _LOGGER.warning(
+                "Projector did not confirm it is off within %s s; leaving %s on",
+                POWER_OFF_CONFIRM_TIMEOUT,
+                entity_id,
+            )
+            return
+        options = self.config_entry.options
+        deadline = time.monotonic() + options.get(
+            CONF_POWER_OFF_DELAY, DEFAULT_POWER_OFF_DELAY
+        )
+        while True:
+            # Keep checking during the cool-down: it may have been turned back
+            # on with the remote. Checked once more right before cutting power.
+            power = await self._async_probe_power()
+            if power not in (None, POWER_STANDBY):
+                _LOGGER.info(
+                    "Projector is no longer off (power=%s); leaving %s on",
+                    power,
+                    entity_id,
+                )
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(remaining, POWER_OFF_CHECK_SECONDS))
+        domain = entity_id.split(".", 1)[0]
+        _LOGGER.debug("Projector is fully off, turning off %s", entity_id)
+        try:
+            await self.hass.services.async_call(
+                domain, "turn_off", {"entity_id": entity_id}, blocking=True
+            )
+        except HomeAssistantError as err:
+            _LOGGER.error("Could not turn off %s: %s", entity_id, err)
 
     async def _async_wake(self) -> bool:
         """Wake the projector. Returns False if no wake method is configured.
 
-        Raises if Wake-on-LAN gets no answer, so the user sees an error instead
-        of a toggle that silently flips back to off.
+        A linked entity goes first, because it's the user's own power control.
+        It can't confirm the projector reacted, and a cold boot takes longer than
+        we can block a service call, so we show "booting" and fall back to off if
+        it never answers. Wake-on-LAN alone does get an answer, so it raises if
+        there is none instead of a toggle that silently flips back to off.
         """
         options = self.config_entry.options
-        mac = options.get(CONF_WOL_MAC)
+        mac = options.get(CONF_WOL_MAC) if wol_enabled(options) else None
         wake_entity = options.get(CONF_WAKE_ENTITY)
         if not mac and not wake_entity:
             return False
         generation = self._power_gen
-        if mac and await self._async_wake_on_lan(mac, generation):
+        if wake_entity:
+            await self._async_wake_via_entity(wake_entity)
             if generation == self._power_gen:
                 self._async_start_waking()
+            if mac:
+                self.config_entry.async_create_background_task(
+                    self.hass,
+                    self._async_wake_on_lan(mac, generation),
+                    "aetherion_wake_on_lan",
+                )
             return True
-        if wake_entity:
-            # A wake entity (e.g. IR) can't confirm the projector reacted, and
-            # a cold boot takes longer than we can block a service call, so we
-            # show "booting" and fall back to off if it never answers.
-            await self._async_wake_via_entity(wake_entity)
+        if await self._async_wake_on_lan(mac, generation):
             if generation == self._power_gen:
                 self._async_start_waking()
             return True

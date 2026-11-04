@@ -124,27 +124,36 @@
   "options": {
     "step": {
       "init": {
-        "title": "Power on from standby",
-        "description": "In standby the projector closes its Ethernet control port. With network-optimized standby enabled on the projector, a Wake-on-LAN packet to its Wi-Fi MAC brings Wi-Fi up in about 2 seconds, then the integration sends power-on to the Wi-Fi IP.",
+        "title": "Power control",
+        "description": "In standby the projector closes its control port, so the normal power-on command can't reach it. Choose how Home Assistant should power it on: your own switch, Wake-on-LAN, or both. With neither, power it on with the remote.",
         "data": {
-          "wol_mac": "Wi-Fi MAC address (Wake-on-LAN)",
-          "wake_host": "Wi-Fi IP address",
-          "wake_entity": "Wake entity"
+          "wake_entity": "Power-on entity",
+          "power_off_entity": "Also turn this entity off after the projector is off",
+          "power_off_delay": "Wait before turning it off",
+          "wol_enabled": "Use Wake-on-LAN",
+          "wol_mac": "Wi-Fi MAC address",
+          "wake_host": "Wi-Fi IP address"
         },
         "data_description": {
-          "wol_mac": "MAC of the projector's Wi-Fi interface. Auto-filled at setup with the MAC of the connected address.",
-          "wake_host": "Leave empty if the projector is set up on its Wi-Fi IP. Give it a DHCP reservation.",
-          "wake_entity": "Optional remote, script, switch or button that also powers the projector on."
+          "wake_entity": "Your own power control, for example a smart plug, relay or IR blaster script. It is turned on when the projector's control port is closed.",
+          "power_off_entity": "Only after the projector accepted Home Assistant's off command and is confirmed off. If it never confirms, or it comes back on, the entity is left on.",
+          "power_off_delay": "Cool-down after the projector is confirmed off, before cutting power.",
+          "wol_enabled": "Needs network optimized standby on the projector. It stops answering after a while in standby.",
+          "wol_mac": "MAC of the projector's Wi-Fi interface. The Ethernet MAC does not wake it.",
+          "wake_host": "Only needed if the projector is set up on its Ethernet IP. Give it a DHCP reservation."
         }
       }
     },
     "error": {
-      "invalid_mac": "Enter a MAC address like AA:BB:CC:00:11:22."
+      "invalid_mac": "Enter a MAC address like AA:BB:CC:00:11:22.",
+      "mac_required": "Wake-on-LAN needs the Wi-Fi MAC address.",
+      "power_entity_required": "Choose the entity to turn off.",
+      "entity_cannot_turn_off": "This entity can't be turned off. Use a switch, input boolean, remote or media player."
     }
   },
   "exceptions": {
     "standby_port_closed": {
-      "message": "The projector is in standby and its control port is closed. Set a Wake-on-LAN MAC address or wake entity in the integration options, and enable network standby on the projector."
+      "message": "The projector is in standby and its control port is closed. Power it on with the remote, or set up a power-on entity or Wake-on-LAN in the integration options."
     },
     "invalid_wake_entity": {
       "message": "Wake entity {entity_id} must be a remote, media player, script, switch or button that does not belong to this integration."

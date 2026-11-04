@@ -84,7 +84,14 @@ class AetherionRemote(AetherionEntity, RemoteEntity):
                 if not first and delay:
                     await asyncio.sleep(delay)
                 first = False
-                await self.coordinator.async_run(self._client_call(cmd))
+                key = cmd.strip().lower()
+                # Same paths as the toggle, so wake and power-cut logic applies.
+                if key == "power_on":
+                    await self.coordinator.async_turn_on()
+                elif key == "power_off":
+                    await self.coordinator.async_turn_off()
+                else:
+                    await self.coordinator.async_run(self._client_call(cmd))
 
     @staticmethod
     def _validate(cmd: str) -> None:
@@ -117,8 +124,4 @@ class AetherionRemote(AetherionEntity, RemoteEntity):
                 return client.set_mute(False)
             case "focus":
                 return client.manual_focus()
-            case "power_on":
-                return client.power_on()
-            case "power_off":
-                return client.power_off()
         return client.remote_key(key)

@@ -14,7 +14,6 @@ from custom_components.aetherion.protocol import (
     NotificationListener,
     SignalInfo,
     auth_digest,
-    arp_lookup,
     build_frame,
     normalize_mac,
     normalize_resolution,
@@ -157,19 +156,10 @@ def test_listener_dispatch() -> None:
     assert listener._search_results["10.0.0.7"].model == "Aetherion Pro"
 
 
-def test_mac_helpers(tmp_path) -> None:
+def test_mac_helpers() -> None:
     assert normalize_mac("AA-BB-CC-00-11-22") == "aa:bb:cc:00:11:22"
     with pytest.raises(ValueError):
         normalize_mac("nope")
-    table = tmp_path / "arp"
-    table.write_text(
-        "IP address       HW type     Flags       HW address            Mask     Device\n"
-        "192.168.1.50     0x1         0x2         aa:bb:cc:00:11:33     *        eth0\n"
-        "192.168.1.99      0x1         0x0         00:00:00:00:00:00     *        eth0\n"
-    )
-    assert arp_lookup("192.168.1.50", str(table)) == "aa:bb:cc:00:11:33"
-    assert arp_lookup("192.168.1.99", str(table)) is None
-    assert arp_lookup("10.0.0.1", str(tmp_path / "missing")) is None
 
 
 async def test_connect_failure_retried_when_on(projector: FakeProjector) -> None:

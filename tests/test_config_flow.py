@@ -26,19 +26,13 @@ async def test_manual_flow(hass: HomeAssistant, projector: FakeProjector) -> Non
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "manual"
 
-    with (
-        patch(SETUP, return_value=True),
-        patch(
-            "custom_components.aetherion.config_flow.arp_lookup",
-            return_value="aa:bb:cc:00:11:33",
-        ),
-    ):
+    with patch(SETUP, return_value=True):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {CONF_HOST: "127.0.0.1", CONF_PORT: projector.port},
         )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["result"].options == {"wol_mac": "aa:bb:cc:00:11:33"}
+    assert result["result"].options == {}  # Wake-on-LAN is opt-in
     # Generic device name "Aetherion" -> titled by model to avoid entity ID clashes
     assert result["title"] == "Aetherion Max"
     assert result["data"] == {CONF_HOST: "127.0.0.1", CONF_PORT: projector.port}
@@ -108,24 +102,64 @@ async def test_already_configured(hass: HomeAssistant, projector: FakeProjector)
     assert result["reason"] == "already_configured"
 
 
+async def _options_submit(hass, entry, user_input):
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    return await hass.config_entries.options.async_configure(result["flow_id"], user_input)
+
+
 async def test_options_flow(hass: HomeAssistant) -> None:
     entry = MockConfigEntry(domain=DOMAIN, unique_id="x", data={CONF_HOST: "10.0.0.9"})
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] is FlowResultType.FORM
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"wol_mac": "bad"}
-    )
+
+    result = await _options_submit(hass, entry, {"wol_mac": "bad"})
     assert result["errors"] == {"wol_mac": "invalid_mac"}
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {"wol_mac": "AA-BB-CC-00-11-22", "wake_entity": "script.projector_ir_on"},
+    result = await _options_submit(hass, entry, {"wol_enabled": True})
+    assert result["errors"] == {"wol_mac": "mac_required"}
+    result = await _options_submit(hass, entry, {"power_off_entity": True})
+    assert result["errors"] == {"wake_entity": "power_entity_required"}
+    result = await _options_submit(
+        hass, entry, {"power_off_entity": True, "wake_entity": "script.projector_ir_on"}
+    )
+    assert result["errors"] == {"wake_entity": "entity_cannot_turn_off"}
+
+    result = await _options_submit(
+        hass,
+        entry,
+        {
+            "wol_enabled": True,
+            "wol_mac": "AA-BB-CC-00-11-22",
+            "wake_entity": "switch.projector_power",
+            "power_off_entity": True,
+            "power_off_delay": 60.0,
+        },
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options == {
+        "wol_enabled": True,
         "wol_mac": "aa:bb:cc:00:11:22",
-        "wake_entity": "script.projector_ir_on",
+        "wake_entity": "switch.projector_power",
+        "power_off_entity": True,
+        "power_off_delay": 60,
     }
+
+
+async def test_options_defaults_and_unticking(hass: HomeAssistant) -> None:
+    """Wake-on-LAN defaults off, and an unticked box stays off."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="x",
+        data={CONF_HOST: "10.0.0.9"},
+        options={"wol_mac": "aa:bb:cc:00:11:22", "wake_host": "10.0.0.8"},
+    )
+    entry.add_to_hass(hass)
+    result = await _options_submit(
+        hass, entry, {"wol_enabled": False, "wol_mac": "aa:bb:cc:00:11:22", "wake_host": "10.0.0.8"}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options["wol_enabled"] is False
+    assert entry.options["power_off_entity"] is False
+    assert entry.options["power_off_delay"] == 120
 
 
 async def test_reconfigure_keeps_ids_and_frees_old_address(

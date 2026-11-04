@@ -19,6 +19,9 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     EntitySelector,
     EntitySelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
@@ -29,13 +32,21 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_DEVICE_KEY,
+    CONF_POWER_OFF_DELAY,
+    CONF_POWER_OFF_ENTITY,
     CONF_WAKE_ENTITY,
     CONF_WAKE_HOST,
+    CONF_WOL_ENABLED,
     CONF_WOL_MAC,
     DEFAULT_NAME,
+    DEFAULT_POWER_OFF_DELAY,
     DISCOVERY_TIMEOUT,
     DOMAIN,
+    MAX_POWER_OFF_DELAY,
+    POWER_OFF_DOMAINS,
+    WAKE_DOMAINS,
     device_key,
+    wol_enabled,
 )
 from .protocol import (
     DEFAULT_PORT,
@@ -43,7 +54,6 @@ from .protocol import (
     AetherionClient,
     AetherionError,
     DiscoveredProjector,
-    arp_lookup,
     normalize_mac,
 )
 
@@ -174,14 +184,7 @@ class AetherionConfigFlow(ConfigFlow, domain=DOMAIN):
                 # identity, and could belong to a different projector by now.
                 self._abort_if_unique_id_configured()
                 self._async_abort_entries_match({CONF_HOST: data[CONF_HOST]})
-                # Connecting just populated HA's ARP table: grab the MAC so
-                # Wake-on-LAN works without the user looking it up.
-                mac = await self.hass.async_add_executor_job(arp_lookup, data[CONF_HOST])
-                return self.async_create_entry(
-                    title=info["name"],
-                    data=data,
-                    options={CONF_WOL_MAC: mac} if mac else {},
-                )
+                return self.async_create_entry(title=info["name"], data=data)
             self._defaults = user_input
         return self.async_show_form(
             step_id="manual", data_schema=_manual_schema(self._defaults), errors=errors
@@ -274,7 +277,7 @@ class AetherionConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class AetherionOptionsFlow(OptionsFlow):
-    """Pick an entity that can wake the projector from standby."""
+    """Choose how the projector gets powered on from standby."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -282,17 +285,12 @@ class AetherionOptionsFlow(OptionsFlow):
         """Manage options."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            options = {k: v for k, v in user_input.items() if v}
-            try:
-                if CONF_WOL_MAC in options:
-                    options[CONF_WOL_MAC] = normalize_mac(options[CONF_WOL_MAC])
-            except ValueError:
-                errors[CONF_WOL_MAC] = "invalid_mac"
-            else:
+            # Keep False/0: an unticked box must not fall back to its default.
+            options = {k: v for k, v in user_input.items() if v not in (None, "")}
+            errors = self._validate(options)
+            if not errors:
                 return self.async_create_entry(data=options)
-        current = self.config_entry.options.get(CONF_WAKE_ENTITY)
-        current_mac = self.config_entry.options.get(CONF_WOL_MAC)
-        current_wake_host = self.config_entry.options.get(CONF_WAKE_HOST)
+        current = self.config_entry.options if user_input is None else user_input
         own = [
             e.entity_id
             for e in er.async_entries_for_config_entry(
@@ -305,20 +303,63 @@ class AetherionOptionsFlow(OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Optional(
-                        CONF_WOL_MAC, description={"suggested_value": current_mac}
+                        CONF_WAKE_ENTITY,
+                        description={"suggested_value": current.get(CONF_WAKE_ENTITY)},
+                    ): EntitySelector(
+                        EntitySelectorConfig(
+                            domain=list(WAKE_DOMAINS), exclude_entities=own
+                        )
+                    ),
+                    vol.Required(
+                        CONF_POWER_OFF_ENTITY,
+                        default=current.get(CONF_POWER_OFF_ENTITY, False),
+                    ): bool,
+                    vol.Required(
+                        CONF_POWER_OFF_DELAY,
+                        default=current.get(
+                            CONF_POWER_OFF_DELAY, DEFAULT_POWER_OFF_DELAY
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=MAX_POWER_OFF_DELAY,
+                            step=5,
+                            unit_of_measurement="s",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_WOL_ENABLED, default=wol_enabled(current)
+                    ): bool,
+                    vol.Optional(
+                        CONF_WOL_MAC,
+                        description={"suggested_value": current.get(CONF_WOL_MAC)},
                     ): str,
                     vol.Optional(
                         CONF_WAKE_HOST,
-                        description={"suggested_value": current_wake_host},
+                        description={"suggested_value": current.get(CONF_WAKE_HOST)},
                     ): str,
-                    vol.Optional(
-                        CONF_WAKE_ENTITY, description={"suggested_value": current}
-                    ): EntitySelector(
-                        EntitySelectorConfig(
-                            domain=["remote", "media_player", "script", "switch", "button"],
-                            exclude_entities=own,
-                        )
-                    )
                 }
             ),
         )
+
+    @staticmethod
+    def _validate(options: dict[str, Any]) -> dict[str, str]:
+        """Check and normalize the options in place; return form errors."""
+        errors: dict[str, str] = {}
+        if CONF_WOL_MAC in options:
+            try:
+                options[CONF_WOL_MAC] = normalize_mac(options[CONF_WOL_MAC])
+            except ValueError:
+                errors[CONF_WOL_MAC] = "invalid_mac"
+        elif options.get(CONF_WOL_ENABLED):
+            errors[CONF_WOL_MAC] = "mac_required"
+        if CONF_POWER_OFF_DELAY in options:
+            options[CONF_POWER_OFF_DELAY] = int(options[CONF_POWER_OFF_DELAY])
+        entity_id = options.get(CONF_WAKE_ENTITY)
+        if options.get(CONF_POWER_OFF_ENTITY):
+            if not entity_id:
+                errors[CONF_WAKE_ENTITY] = "power_entity_required"
+            elif entity_id.split(".", 1)[0] not in POWER_OFF_DOMAINS:
+                errors[CONF_WAKE_ENTITY] = "entity_cannot_turn_off"
+        return errors

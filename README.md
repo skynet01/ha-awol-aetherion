@@ -18,7 +18,7 @@ No cloud and no ADB.
   level, and a manual focus button.
 - **Sensors**: input resolution, signal timing, HDR and audio format, picture size,
   laser level, temperatures, fan speeds, and a problem alert.
-- **Power on from standby** via Wake-on-LAN (see below).
+- **Power on from standby** with your own switch or Wake-on-LAN (see below).
 - **`aetherion.send_command` action**: send any raw protocol command and get the reply.
 - LAN discovery, instant status updates, and gentle polling while the projector is off.
 
@@ -26,7 +26,7 @@ No cloud and no ADB.
 
 - Aetherion firmware **20260929** or newer.
 - On the projector, enable **Network control**.
-- To power on from Home Assistant, also enable **network optimized standby**.
+- To use Wake-on-LAN, also enable **network optimized standby**.
 
 ## Installation
 
@@ -49,28 +49,51 @@ folder, then restart Home Assistant.
 
 Give the projector's IP address(es) a DHCP reservation in your router.
 
-## Powering on from standby
+## Power control
 
 In standby the projector closes its control port, so the regular power-on command
-can't reach it. With **network optimized standby** enabled, the integration wakes it
-like this:
+can't reach it. Choose how Home Assistant powers it on under the integration's
+**Configure** (options). Without either option below, power it on with the remote.
 
-1. It sends a Wake-on-LAN packet to the projector's **Wi-Fi** MAC address.
-2. Wi-Fi comes up in about 2 seconds, and the integration sends power-on.
-3. The projector is fully on in about 10 seconds.
+**Your own power entity**
 
-Set both values under the integration's **Configure** (options):
+Pick a switch, smart plug, relay, or an IR blaster script as the **Power-on entity**.
+It's turned on when the projector's control port is closed. The projector then shows
+as on while it boots, and the integration sends power-on as soon as it answers.
+
+Tick **Also turn this entity off after the projector is off** to cut power again. It's
+built not to cut power early:
+
+1. The projector must accept Home Assistant's off command.
+2. It must be confirmed off: its control port closed, or it still reports standby
+   after 5 minutes.
+3. The cool-down must pass (default 120 seconds, adjustable).
+
+If the projector never confirms it's off, comes back on during the cool-down, or you
+turn it on again, the entity stays on. If the projector was turned off some other way,
+such as with the remote, or isn't reachable, the entity is left alone.
+
+An entity can only power the projector on if turning it on makes the projector start.
+If the entity is already on, turning it on does nothing.
+
+**Wake-on-LAN** (off by default)
+
+Needs **network optimized standby** on the projector. Tick **Use Wake-on-LAN** and
+enter:
 
 | Option | Value |
 | --- | --- |
 | Wi-Fi MAC address | MAC of the projector's Wi-Fi interface (Ethernet's MAC does not wake it) |
 | Wi-Fi IP address | Only needed if you set the projector up on its Ethernet IP |
-| Wake entity | Optional extra wake method, for example an IR blaster script |
 
-**Known limitation:** after the projector has been in standby for a while (about 2
-hours in testing), it goes into deep standby and stops answering Wake-on-LAN. Then
-only the remote, or an IR blaster set as the wake entity, can turn it on. If that
-happens, `turn_on` shows an error instead of failing silently.
+The packet brings Wi-Fi up in about 2 seconds, the integration sends power-on, and
+the projector is fully on in about 10 seconds.
+
+**Known limitation:** after a while in standby (about 2 hours in testing), the
+projector goes into deep standby and stops answering Wake-on-LAN. If that happens,
+`turn_on` shows an error instead of failing silently.
+
+If both are set, the power entity goes first and Wake-on-LAN is sent as well.
 
 ## Notes
 
