@@ -1,0 +1,17 @@
+{
+  "domain": "aetherion",
+  "name": "AWOL Aetherion Projector",
+  "codeowners": [
+    "@skynet01"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/skynet01/ha-awol-aetherion",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/skynet01/ha-awol-aetherion/issues",
+  "loggers": [
+    "custom_components.aetherion"
+  ],
+  "requirements": [],
+  "version": "0.1.0"
+}

@@ -1,0 +1,11 @@
+send_command:
+  target:
+    entity:
+      integration: aetherion
+      domain: media_player
+  fields:
+    command:
+      required: true
+      example: "%3PICT ?"
+      selector:
+        text:

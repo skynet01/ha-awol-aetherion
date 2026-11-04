@@ -1,0 +1,101 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "problem": {
+        "default": "mdi:alert-circle-outline",
+        "state": {
+          "off": "mdi:check-circle-outline"
+        }
+      }
+    },
+    "button": {
+      "manual_focus": {
+        "default": "mdi:image-filter-center-focus"
+      }
+    },
+    "media_player": {
+      "projector": {
+        "default": "mdi:projector",
+        "state": {
+          "off": "mdi:projector-off"
+        }
+      }
+    },
+    "remote": {
+      "remote": {
+        "default": "mdi:remote",
+        "state": {
+          "off": "mdi:remote-off"
+        }
+      }
+    },
+    "select": {
+      "picture_mode": {
+        "default": "mdi:palette"
+      },
+      "motion_enhancement": {
+        "default": "mdi:motion-play-outline"
+      },
+      "gamma": {
+        "default": "mdi:gamma"
+      },
+      "dynamic_tone_mapping": {
+        "default": "mdi:hdr"
+      },
+      "color_temperature": {
+        "default": "mdi:white-balance-sunny"
+      }
+    },
+    "sensor": {
+      "input_resolution": {
+        "default": "mdi:monitor-screenshot"
+      },
+      "recommended_resolution": {
+        "default": "mdi:monitor-star"
+      },
+      "picture_size": {
+        "default": "mdi:aspect-ratio"
+      },
+      "signal_timing": {
+        "default": "mdi:sine-wave"
+      },
+      "hdr_format": {
+        "default": "mdi:hdr"
+      },
+      "audio_format": {
+        "default": "mdi:surround-sound"
+      },
+      "color_depth": {
+        "default": "mdi:palette-swatch-variant"
+      },
+      "color_format": {
+        "default": "mdi:format-color-fill"
+      },
+      "color_primaries": {
+        "default": "mdi:palette-advanced"
+      },
+      "temperature": {
+        "default": "mdi:thermometer"
+      },
+      "fan_speed": {
+        "default": "mdi:fan"
+      },
+      "laser_level": {
+        "default": "mdi:brightness-6"
+      }
+    },
+    "switch": {
+      "enhanced_black_level": {
+        "default": "mdi:contrast-circle",
+        "state": {
+          "off": "mdi:contrast-box"
+        }
+      }
+    }
+  },
+  "services": {
+    "send_command": {
+      "service": "mdi:console-line"
+    }
+  }
+}
