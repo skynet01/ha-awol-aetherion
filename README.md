@@ -89,8 +89,9 @@ enter:
 The packet brings Wi-Fi up in about 2 seconds, the integration sends power-on, and
 the projector is fully on in about 10 seconds.
 
-**Known limitation:** after a while in standby (about 2 hours in testing), the
-projector goes into deep standby and stops answering Wake-on-LAN. If that happens,
+**Known limitation:** it isn't always reliable. In testing it worked after 8.5 hours
+in standby once, and stopped answering after about 2 hours another time, with the
+projector's Wi-Fi still connected. The cause isn't known yet. If it doesn't answer,
 `turn_on` shows an error instead of failing silently.
 
 If both are set, the power entity goes first and Wake-on-LAN is sent as well.
